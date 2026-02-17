@@ -1,56 +1,78 @@
+use std::fs::{self, create_dir};
 use std::{path::Path, path::PathBuf};
 
-use git2::{Error, Repository};
+use git2::{Error, Repository, Signature};
 
-pub mod stores;
+use serde::Serialize;
 
-use stores::Store;
-
-use crate::stores::default_store::DefaultStore;
-
-pub struct Database<T: Store> {
+pub struct Database {
     repo: Repository,
     path: PathBuf,
-    pub store: T,
 }
 
-impl<T: Store> Database<T> {
-    pub fn new(path: &Path, store: T) -> Result<Self, Error> {
+impl Database {
+    pub fn new(path: &Path) -> Result<Self, Error> {
         let repo = Repository::init(path)?;
 
         let db = Database {
             repo,
             path: path.to_path_buf(),
-            store,
         };
 
         Ok(db)
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use std::fs;
+    pub fn insert<V: Serialize>(
+        &self,
+        collection: &str,
+        id: &str,
+        data: &V,
+    ) -> Result<(), git2::Error> {
+        let dir = Path::join(self.path.as_path(), collection);
 
-    use super::*;
-
-    #[test]
-    fn database_new() {
-        let test_path = Path::new("test_dir");
-
-        if test_path.exists() {
-            fs::remove_dir_all(test_path).unwrap();
+        match create_dir(&dir) {
+            Ok(_t) => (),
+            Err(e) => eprintln!("Error when create_dir: {}", e),
         }
 
-        let store = DefaultStore {
-            name: "DefaultStore".to_owned(),
-        };
-        let db = Database::new(test_path, store).expect("Create database");
+        let file_path = PathBuf::from(dir).join(format!("{}.json", id));
 
-        assert!(test_path.exists());
-        assert!(test_path.join(".git").exists());
-        assert_eq!(db.path, test_path);
+        let serialized = serde_json::to_string_pretty(data).unwrap();
 
-        fs::remove_dir_all(test_path).expect("Remove dir");
+        match fs::write(file_path, serialized) {
+            Ok(_t) => println!("Saved record with id: {}", id),
+            Err(e) => eprintln!("Error saving record with id: {}, error: {}", id, e),
+        }
+
+        let mut index = self.repo.index()?;
+
+        let rel_path = Path::new(collection).join(format!("{}.json", id));
+
+        index.add_path(&rel_path).unwrap();
+
+        index.write().unwrap();
+
+        let wt = index.write_tree().unwrap();
+
+        let tree = self.repo.find_tree(wt).unwrap();
+
+        let parent_commit = self.repo.head().unwrap().peel_to_commit().unwrap();
+
+        let sig = Signature::now("gitbase", "auto@gitbase.com").unwrap();
+
+        self.repo
+            .commit(
+                Some("HEAD"),
+                &sig,
+                &sig,
+                &format!("Update {} / {}", collection, id),
+                &tree,
+                &[&parent_commit],
+            )
+            .unwrap();
+
+        println!("Commited succesfully!");
+
+        Ok(())
     }
 }
