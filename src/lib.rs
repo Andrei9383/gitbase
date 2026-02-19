@@ -1,9 +1,27 @@
-use std::fs::{self, create_dir};
-use std::{path::Path, path::PathBuf};
-
 use git2::{Error, Repository, Signature};
+use std::fs::{self, create_dir, create_dir_all};
+use std::io::Error as ioError;
+use std::{path::Path, path::PathBuf};
+use thiserror::Error;
 
 use serde::Serialize;
+
+use log::debug;
+
+#[derive(Error, Debug)]
+pub enum DatabaseError {
+    #[error("IO Error: {0}")]
+    Io(#[from] std::io::Error),
+
+    #[error("Git Error: {0}")]
+    Git(#[from] git2::Error),
+
+    #[error("Serialization Error: {0}")]
+    Serde(#[from] serde_json::Error),
+
+    #[error("Validation Error: {0}")]
+    InvalidCollection(String),
+}
 
 pub struct Database {
     repo: Repository,
@@ -11,15 +29,12 @@ pub struct Database {
 }
 
 impl Database {
-    pub fn new(path: &Path) -> Result<Self, Error> {
+    pub fn new(path: &Path) -> Result<Self, DatabaseError> {
         let repo = Repository::init(path)?;
-
-        let db = Database {
+        Ok(Database {
             repo,
             path: path.to_path_buf(),
-        };
-
-        Ok(db)
+        })
     }
 
     pub fn insert<V: Serialize>(
@@ -27,52 +42,78 @@ impl Database {
         collection: &str,
         id: &str,
         data: &V,
-    ) -> Result<(), git2::Error> {
-        let dir = Path::join(self.path.as_path(), collection);
+    ) -> Result<(), DatabaseError> {
+        let dir = self.path.join(collection);
 
-        match create_dir(&dir) {
-            Ok(_t) => (),
-            Err(e) => eprintln!("Error when create_dir: {}", e),
-        }
+        create_dir_all(&dir)?;
 
-        let file_path = PathBuf::from(dir).join(format!("{}.json", id));
+        let file_path = dir.join(format!("{}.json", id));
+        let serialized = serde_json::to_string_pretty(data)?;
 
-        let serialized = serde_json::to_string_pretty(data).unwrap();
-
-        match fs::write(file_path, serialized) {
-            Ok(_t) => println!("Saved record with id: {}", id),
-            Err(e) => eprintln!("Error saving record with id: {}, error: {}", id, e),
-        }
+        fs::write(&file_path, serialized)?;
 
         let mut index = self.repo.index()?;
-
         let rel_path = Path::new(collection).join(format!("{}.json", id));
 
-        index.add_path(&rel_path).unwrap();
+        index.add_path(&rel_path)?;
+        index.write()?;
 
-        index.write().unwrap();
+        let wt = index.write_tree()?;
+        let tree = self.repo.find_tree(wt)?;
+        let sig = Signature::now("gitbase", "auto@gitbase.com")?;
 
-        let wt = index.write_tree().unwrap();
+        let parent_commit = match self.repo.head() {
+            Ok(head) => Some(head.peel_to_commit()?),
+            Err(_) => None,
+        };
 
-        let tree = self.repo.find_tree(wt).unwrap();
+        let parents = match &parent_commit {
+            Some(c) => vec![c],
+            None => vec![],
+        };
 
-        let parent_commit = self.repo.head().unwrap().peel_to_commit().unwrap();
+        self.repo.commit(
+            Some("HEAD"),
+            &sig,
+            &sig,
+            &format!("Update {} / {}", collection, id),
+            &tree,
+            &parents,
+        )?;
 
-        let sig = Signature::now("gitbase", "auto@gitbase.com").unwrap();
+        Ok(())
+    }
 
-        self.repo
-            .commit(
-                Some("HEAD"),
-                &sig,
-                &sig,
-                &format!("Update {} / {}", collection, id),
-                &tree,
-                &[&parent_commit],
-            )
-            .unwrap();
+    fn remove_suffix(str: &str) -> &str {
+        str.trim_end_matches(".json")
+    }
 
-        println!("Commited succesfully!");
+    pub fn get_collection(&self, collection: &str) -> Result<Vec<String>, DatabaseError> {
+        let dir = self.path.join(collection);
 
+        if !dir.exists() {
+            return Err(DatabaseError::InvalidCollection(
+                "invalid or unknown collection".to_string(),
+            ));
+        }
+
+        let mut result: Vec<String> = Vec::new();
+
+        for entry in dir.read_dir().expect("should read from dir") {
+            if let Ok(entry) = entry {
+                debug!(
+                    "{:?}",
+                    Database::remove_suffix(entry.file_name().to_str().unwrap())
+                );
+                result
+                    .push(Database::remove_suffix(entry.file_name().to_str().unwrap()).to_string());
+            }
+        }
+
+        Ok(result)
+    }
+
+    pub fn get_document(collection: &str, id: &str) -> Result<(), DatabaseError> {
         Ok(())
     }
 }
