@@ -10,6 +10,8 @@ struct User {
 }
 
 fn main() {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug")).init();
+
     println!("Hello World from main.rs");
 
     let test_path = Path::new("test_dir");
@@ -17,9 +19,14 @@ fn main() {
     let db = Database::new(test_path).unwrap();
 
     let user_1 = User {
-        name: "User1".to_string(),
+        name: "User2".to_string(),
         age: 20,
     };
 
-    db.insert("users", "user1", &user_1);
+    //db.insert("users", "user2", &user_1);
+
+    match db.get_collection("users") {
+        Ok(result) => println!("got: {:#?}", result),
+        Err(e) => eprintln!("error: {}", e),
+    }
 }
