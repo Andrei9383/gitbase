@@ -19,7 +19,9 @@ fn read_string() -> String {
     use std::io::{self, Read};
 
     let mut buffer = String::new();
-    io::stdin().read_line(&mut buffer).expect("Failed to read from stdin");
+    io::stdin()
+        .read_line(&mut buffer)
+        .expect("Failed to read from stdin");
     buffer
 }
 
@@ -27,17 +29,22 @@ fn read_number() -> u32 {
     use std::io::{self, Read};
 
     let mut buffer = String::new();
-    io::stdin().read_line(&mut buffer).expect("Failed to read from stdin");
-    buffer.trim().parse::<u32>().expect("Please enter a valid number")
+    io::stdin()
+        .read_line(&mut buffer)
+        .expect("Failed to read from stdin");
+    buffer
+        .trim()
+        .parse::<u32>()
+        .expect("Please enter a valid number")
 }
 
 fn print_menu() {
     println!("1. Add Task");
     println!("2. List Tasks");
-    println!("3. Exit");
+    println!("3. Detail task");
+    println!("4. Exit");
     println!("Enter your choice:");
 }
-
 
 fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug")).init();
@@ -46,8 +53,11 @@ fn main() {
 
     let test_path = Path::new("tasks");
 
-    let db = Database::new(test_path, Some("git@github.com:Andrei9383/gitbase-polygon.git".to_string())).unwrap();
-
+    let db = Database::new(
+        test_path,
+        Some("git@github.com:Andrei9383/gitbase-polygon.git".to_string()),
+    )
+    .unwrap();
 
     loop {
         print_menu();
@@ -67,7 +77,6 @@ fn main() {
                 };
 
                 db.insert("tasks", None, &task).unwrap();
-
             }
             2 => {
                 let tasks = db.get_collection("tasks").unwrap_or_else(|_| Vec::new());
@@ -81,6 +90,23 @@ fn main() {
                 }
             }
             3 => {
+                println!("Enter task name:");
+                let task_name = read_string().trim().to_string();
+                let tasks = db.get_collection("tasks").unwrap_or_else(|_| Vec::new());
+
+                if !tasks.contains(&task_name) {
+                    println!("task not found!");
+                    break;
+                }
+
+                let task = db.get_document::<Task>("tasks", task_name.as_str());
+
+                match task {
+                    Ok(t) => println!("{:?}", t),
+                    Err(e) => println!("error: {}", e),
+                }
+            }
+            4 => {
                 println!("Exiting...");
                 break;
             }
