@@ -1,13 +1,17 @@
-use git2::{build::RepoBuilder, Cred, Error, FetchOptions, PushOptions, Remote, RemoteCallbacks, Repository, Signature};
+use git2::{
+    Cred, Error, FetchOptions, PushOptions, Remote, RemoteCallbacks, Repository, Signature,
+    build::RepoBuilder,
+};
+use serde::de::DeserializeOwned;
+use std::env;
 use std::fs::{self, create_dir, create_dir_all};
 use std::io::Error as ioError;
-use std::env;
 use std::{path::Path, path::PathBuf};
 use thiserror::Error;
 
 use uuid::Uuid;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use log::debug;
 
@@ -38,22 +42,24 @@ impl Database {
             Some(url) => {
                 if !path.exists() {
                     create_dir_all(path)?;
-                }
-                else {
+                } else {
                     debug!("Path already exists, opening existing repository");
                     return Ok(Database {
                         repo: Repository::open(path)?,
                         path: path.to_path_buf(),
-                        url: Some(url),                    
+                        url: Some(url),
                     });
                 }
-                
+
                 let mut callbacks = RemoteCallbacks::new();
                 callbacks.credentials(|_url, username_from_url, _allowed_types| {
                     Cred::ssh_key(
                         username_from_url.unwrap(),
                         None,
-                        std::path::Path::new(&format!("{}/.ssh/id_ed25519", env::var("HOME").unwrap())),
+                        std::path::Path::new(&format!(
+                            "{}/.ssh/id_ed25519",
+                            env::var("HOME").unwrap()
+                        )),
                         None,
                     )
                 });
@@ -142,15 +148,18 @@ impl Database {
             let mut callbacks = RemoteCallbacks::new();
 
             callbacks.credentials(|_url, username_from_url, _allowed_types| {
-            Cred::ssh_key(
-                username_from_url.unwrap(),
-                None,
-                std::path::Path::new(&format!("{}/.ssh/id_ed25519", env::var("HOME").unwrap())),
-                None,
-            )
+                Cred::ssh_key(
+                    username_from_url.unwrap(),
+                    None,
+                    std::path::Path::new(&format!("{}/.ssh/id_ed25519", env::var("HOME").unwrap())),
+                    None,
+                )
             });
 
-            if let Err(e) = remote.push(&["refs/heads/main"],  Some(PushOptions::new().remote_callbacks(callbacks))) {
+            if let Err(e) = remote.push(
+                &["refs/heads/main"],
+                Some(PushOptions::new().remote_callbacks(callbacks)),
+            ) {
                 debug!("Failed to push to remote: {}", e);
             } else {
                 debug!("Successfully pushed to remote");
@@ -200,9 +209,26 @@ impl Database {
         Ok(dir)
     }
 
-    pub fn get_document(&self, collection: &str, id: &str) -> Result<(), DatabaseError> {
+    fn deserialize<'a, T>(&self, data: &'a [u8]) -> T
+    where
+        T: Deserialize<'a>,
+    {
+        let msg = str::from_utf8(data).unwrap();
+        serde_json::from_str::<T>(msg).unwrap()
+    }
+
+    pub fn get_document<T>(&self, collection: &str, id: &str) -> Result<T, DatabaseError>
+    where
+        T: DeserializeOwned,
+    {
         let dir = self.open_collection(collection)?;
 
-        Ok(())
+        let document = fs::read(dir.join(format!("{}.json", id)))?;
+
+        let r = document.as_slice();
+
+        let t = self.deserialize::<T>(r);
+
+        Ok(t)
     }
 }
