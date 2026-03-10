@@ -15,6 +15,8 @@ use serde::{Deserialize, Serialize};
 
 use log::debug;
 
+mod sync;
+
 #[derive(Error, Debug)]
 pub enum DatabaseError {
     #[error("IO Error: {0}")]
