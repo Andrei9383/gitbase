@@ -19,3 +19,6 @@ target/
 *.swp
 *.swo
 .DS_Store
+
+# Testing
+tasks/

@@ -15,6 +15,8 @@ use serde::{Deserialize, Serialize};
 
 use log::debug;
 
+use crate::sync::SyncEngine;
+
 mod sync;
 
 #[derive(Error, Debug)]
@@ -30,12 +32,16 @@ pub enum DatabaseError {
 
     #[error("Validation Error: {0}")]
     InvalidCollection(String),
+
+    #[error("General error: {0}")]
+    General(String),
 }
 
 pub struct Database {
-    repo: Repository,
     path: PathBuf,
+    repo: Repository,
     url: Option<String>,
+    sync_engine: Box<dyn SyncEngine>,
 }
 
 pub enum DestType {
@@ -45,19 +51,25 @@ pub enum DestType {
 
 pub struct DatabaseBuilder {
     path: PathBuf,
-    dest: DestType,
     url: String,
-    sync_type: Box<dyn Sync>,
+    sync_type: Box<dyn SyncEngine>,
+    credentials_path: PathBuf,
+}
+
+impl Default for DatabaseBuilder {
+    fn default() -> Self {
+        Self {
+            path: PathBuf::new(),
+            url: String::new(),
+            sync_type: Box::new(sync::NoSync {}),
+            credentials_path: PathBuf::new(),
+        }
+    }
 }
 
 impl DatabaseBuilder {
-    pub fn path(mut self, path: PathBuf) -> DatabaseBuilder {
+    pub fn local(mut self, path: PathBuf) -> DatabaseBuilder {
         self.path = path;
-        self
-    }
-
-    pub fn local(mut self) -> DatabaseBuilder {
-        self.dest = DestType::Local;
         self
     }
 
@@ -66,144 +78,108 @@ impl DatabaseBuilder {
         self
     }
 
-    pub fn sync_type(mut self, sync_type: Box<dyn Sync>) -> DatabaseBuilder {
+    pub fn credentials(mut self, path: PathBuf) -> DatabaseBuilder {
+        self.credentials_path = path;
+        self
+    }
+
+    pub fn sync_type(mut self, sync_type: Box<dyn SyncEngine>) -> DatabaseBuilder {
         self.sync_type = sync_type;
         self
+    }
+
+    pub fn build(self) -> Result<Database, DatabaseError> {
+        Database::create(self)
     }
 }
 
 impl Database {
-    pub fn new(path: &Path, url: Option<String>) -> Result<Self, DatabaseError> {
-        let repo = match url.clone() {
-            Some(url) => {
-                if !path.exists() {
-                    create_dir_all(path)?;
-                } else {
-                    debug!("Path already exists, opening existing repository");
-                    return Ok(Database {
-                        repo: Repository::open(path)?,
-                        path: path.to_path_buf(),
-                        url: Some(url),
-                    });
-                }
+    pub fn builder() -> DatabaseBuilder {
+        DatabaseBuilder::default()
+    }
 
-                let mut callbacks = RemoteCallbacks::new();
-                callbacks.credentials(|_url, username_from_url, _allowed_types| {
-                    Cred::ssh_key(
-                        username_from_url.unwrap(),
-                        None,
-                        std::path::Path::new(&format!(
-                            "{}/.ssh/id_ed25519",
-                            env::var("HOME").unwrap()
-                        )),
-                        None,
-                    )
-                });
+    fn create(builder: DatabaseBuilder) -> Result<Self, DatabaseError> {
+        create_dir_all(builder.path.clone())
+            .map_err(|err| DatabaseError::General(format!("failed to create path: {}", err)))?;
 
-                let mut fetch_options = FetchOptions::new();
-                fetch_options.remote_callbacks(callbacks);
+        let repo = Repository::init(builder.path.clone()).map_err(|err| {
+            DatabaseError::General(format!("failed to create repository: {}", err))
+        })?;
 
-                let mut builder = RepoBuilder::new();
-                builder.fetch_options(fetch_options);
-
-                builder.clone(&url, path)?
-            }
-            None => {
-                // if !path.exists() {
-                //     create_dir_all(path)?;
-                // }
-                Repository::init(path)?
-            }
-        };
+        // TODO : handle remotes with credntials
 
         Ok(Database {
+            path: builder.path.to_path_buf(),
             repo,
-            path: path.to_path_buf(),
-            url,
+            url: None,
+            sync_engine: builder.sync_type,
         })
     }
 
-    fn commit(&self, collection: &str, id: &str) -> Result<(), DatabaseError> {
-        let mut index = self.repo.index()?;
-        let rel_path = Path::new(collection).join(format!("{}.json", id));
+    // pub fn new(name: String, path: &Path) -> Result<Self, DatabaseError> { create_dir_all(path)
+    //         .map_err(|err| DatabaseError::General(format!("failed to create path: {}", err)))?;
+    //
+    //     let repo = Repository::init(path).map_err(|err| {
+    //         DatabaseError::General(format!("failed to create repository: {}", err))
+    //     })?;
+    //
+    //     Ok(Database {
+    //         name,
+    //         path: path.to_path_buf(),
+    //         repo,
+    //         url: None,
+    //     })
+    // }
 
-        index.add_path(&rel_path)?;
-        index.write()?;
-
-        let wt = index.write_tree()?;
-        let tree = self.repo.find_tree(wt)?;
-        let sig = Signature::now("gitbase", "auto@gitbase.com")?;
-
-        let parent_commit = match self.repo.head() {
-            Ok(head) => Some(head.peel_to_commit()?),
-            Err(_) => None,
-        };
-
-        let parents = match &parent_commit {
-            Some(c) => vec![c],
-            None => vec![],
-        };
-
-        self.repo.commit(
-            Some("HEAD"),
-            &sig,
-            &sig,
-            &format!("Update {} / {}", collection, id),
-            &tree,
-            &parents,
-        )?;
-
-        Ok(())
-    }
-
-    pub fn insert<V: Serialize>(
-        &self,
-        collection: &str,
-        id: Option<&str>,
-        data: &V,
-    ) -> Result<(), DatabaseError> {
-        let dir = self.path.join(collection);
-
-        create_dir_all(&dir)?;
-
-        let random_id = Uuid::new_v4().to_string();
-        let id = id.unwrap_or(random_id.as_str());
-
-        let file_path = dir.join(format!("{}.json", id));
-        let serialized = serde_json::to_string_pretty(data)?;
-
-        fs::write(&file_path, serialized)?;
-
-        self.commit(collection, id)?;
-
-        if self.url.is_some() {
-            let mut remote = self.repo.find_remote("origin")?;
-
-            debug!("remote: {:?}", remote.url().unwrap_or("no url"));
-            // TODO: assertions
-
-            let mut callbacks = RemoteCallbacks::new();
-
-            callbacks.credentials(|_url, username_from_url, _allowed_types| {
-                Cred::ssh_key(
-                    username_from_url.unwrap(),
-                    None,
-                    std::path::Path::new(&format!("{}/.ssh/id_ed25519", env::var("HOME").unwrap())),
-                    None,
-                )
-            });
-
-            if let Err(e) = remote.push(
-                &["refs/heads/main"],
-                Some(PushOptions::new().remote_callbacks(callbacks)),
-            ) {
-                debug!("Failed to push to remote: {}", e);
-            } else {
-                debug!("Successfully pushed to remote");
-            }
-        }
-        Ok(())
-    }
+    // pub fn new(path: &Path, url: Option<String>) -> Result<Self, DatabaseError> {
+    //     let repo = match url.clone() {
+    //         Some(url) => {
+    //             if !path.exists() {
+    //                 create_dir_all(path)?;
+    //             } else {
+    //                 debug!("Path already exists, opening existing repository");
+    //                 return Ok(Database {
+    //                     repo: Repository::open(path)?,
+    //                     path: path.to_path_buf(),
+    //                     url: Some(url),
+    //                 });
+    //             }
+    //
+    //             let mut callbacks = RemoteCallbacks::new();
+    //             callbacks.credentials(|_url, username_from_url, _allowed_types| {
+    //                 Cred::ssh_key(
+    //                     username_from_url.unwrap(),
+    //                     None,
+    //                     std::path::Path::new(&format!(
+    //                         "{}/.ssh/id_ed25519",
+    //                         env::var("HOME").unwrap()
+    //                     )),
+    //                     None,
+    //                 )
+    //             });
+    //
+    //             let mut fetch_options = FetchOptions::new();
+    //             fetch_options.remote_callbacks(callbacks);
+    //
+    //             let mut builder = RepoBuilder::new();
+    //             builder.fetch_options(fetch_options);
+    //
+    //             builder.clone(&url, path)?
+    //         }
+    //         None => {
+    //             // if !path.exists() {
+    //             //     create_dir_all(path)?;
+    //             // }
+    //             Repository::init(path)?
+    //         }
+    //     };
+    //
+    //     Ok(Database {
+    //         repo,
+    //         path: path.to_path_buf(),
+    //         url,
+    //     })
+    // }
 
     fn remove_suffix(str: &str) -> &str {
         str.trim_end_matches(".json")
@@ -267,5 +243,59 @@ impl Database {
         let t = self.deserialize::<T>(r);
 
         Ok(t)
+    }
+}
+
+// ORM
+impl Database {
+    pub fn insert<V: Serialize>(
+        &self,
+        collection: &str,
+        id: Option<&str>,
+        data: &V,
+    ) -> Result<(), DatabaseError> {
+        let dir = self.path.join(collection);
+
+        create_dir_all(&dir)?;
+
+        let random_id = Uuid::new_v4().to_string();
+        let id = id.unwrap_or(random_id.as_str());
+
+        let file_path = dir.join(format!("{}.json", id));
+        let serialized = serde_json::to_string_pretty(data)?;
+
+        fs::write(&file_path, serialized)?;
+
+        self.sync_engine.handle_insert(&self.repo, collection, id);
+
+        // self.sync_engine.commit(&self.repo, collection, id)?;
+
+        // if self.url.is_some() {
+        //     let mut remote = self.repo.find_remote("origin")?;
+        //
+        //     debug!("remote: {:?}", remote.url().unwrap_or("no url"));
+        //     // TODO: assertions
+        //
+        //     let mut callbacks = RemoteCallbacks::new();
+        //
+        //     callbacks.credentials(|_url, username_from_url, _allowed_types| {
+        //         Cred::ssh_key(
+        //             username_from_url.unwrap(),
+        //             None,
+        //             std::path::Path::new(&format!("{}/.ssh/id_ed25519", env::var("HOME").unwrap())),
+        //             None,
+        //         )
+        //     });
+        //
+        //     if let Err(e) = remote.push(
+        //         &["refs/heads/main"],
+        //         Some(PushOptions::new().remote_callbacks(callbacks)),
+        //     ) {
+        //         debug!("Failed to push to remote: {}", e);
+        //     } else {
+        //         debug!("Successfully pushed to remote");
+        //     }
+        // }
+        Ok(())
     }
 }

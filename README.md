@@ -28,6 +28,12 @@ cargo build
 cargo run
 ```
 
+## Docs
+
+### Quick start
+
+See [main.rs](main.rs)
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for details on how to contribute to this project.

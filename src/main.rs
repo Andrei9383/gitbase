@@ -1,4 +1,4 @@
-use gitbase::Database;
+use gitbase::{Database, DatabaseBuilder};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, read};
 use std::{path::Path, path::PathBuf};
@@ -51,13 +51,30 @@ fn main() {
 
     println!("Task Example Tester");
 
-    let test_path = Path::new("tasks");
+    let test_path = Path::new("tasks").to_path_buf();
 
-    let db = Database::new(
-        test_path,
-        Some("git@github.com:Andrei9383/gitbase-polygon.git".to_string()),
-    )
-    .unwrap();
+    /*
+     *
+     * let db = Database::new("testing-db", Path::new("./db"));
+     * db.remote(Some("git@github.com:Andrei9383/gitbase-polygon.git".to_string(),
+     * Option<?>Sync_Strategy);
+     * db.connect();
+     *
+     * db.commiter("Client 1", "client1@gitbase.auto");
+     *
+     * db.insert("collection", Serializable)
+     * db.
+     *
+     *
+     * */
+
+    // let db = Database::new(
+    //     test_path,
+    //     Some("git@github.com:Andrei9383/gitbase-polygon.git".to_string()),
+    // )
+    // .unwrap();
+
+    let db = Database::builder().local(test_path).build().unwrap();
 
     loop {
         print_menu();
