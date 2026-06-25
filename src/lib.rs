@@ -38,6 +38,40 @@ pub struct Database {
     url: Option<String>,
 }
 
+pub enum DestType {
+    Local,
+    Remote,
+}
+
+pub struct DatabaseBuilder {
+    path: PathBuf,
+    dest: DestType,
+    url: String,
+    sync_type: Box<dyn Sync>,
+}
+
+impl DatabaseBuilder {
+    pub fn path(mut self, path: PathBuf) -> DatabaseBuilder {
+        self.path = path;
+        self
+    }
+
+    pub fn local(mut self) -> DatabaseBuilder {
+        self.dest = DestType::Local;
+        self
+    }
+
+    pub fn remote(mut self, url: String) -> DatabaseBuilder {
+        self.url = url;
+        self
+    }
+
+    pub fn sync_type(mut self, sync_type: Box<dyn Sync>) -> DatabaseBuilder {
+        self.sync_type = sync_type;
+        self
+    }
+}
+
 impl Database {
     pub fn new(path: &Path, url: Option<String>) -> Result<Self, DatabaseError> {
         let repo = match url.clone() {
@@ -146,6 +180,7 @@ impl Database {
             let mut remote = self.repo.find_remote("origin")?;
 
             debug!("remote: {:?}", remote.url().unwrap_or("no url"));
+            // TODO: assertions
 
             let mut callbacks = RemoteCallbacks::new();
 

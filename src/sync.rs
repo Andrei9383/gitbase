@@ -2,6 +2,7 @@ use git2::{
     Cred, Error, FetchOptions, PushOptions, Remote, RemoteCallbacks, Repository, Signature,
     build::RepoBuilder,
 };
+use log::debug;
 
 pub trait Sync {
     fn on_insert(&self, repo: &Repository);
@@ -23,8 +24,11 @@ pub struct DefaultSync {
 
 impl Sync for DefaultSync {
     fn on_insert(&self, repo: &Repository) {
-        if self.url.is_some() {
-            let mut remote = repo.find_remote("origin")?;
+        if !self.url.is_empty() {
+            let mut remote = match repo.find_remote("origin") {
+                Ok(rem) => rem,
+                Err(_) => return,
+            };
 
             debug!("remote: {:?}", remote.url().unwrap_or("no url"));
 
